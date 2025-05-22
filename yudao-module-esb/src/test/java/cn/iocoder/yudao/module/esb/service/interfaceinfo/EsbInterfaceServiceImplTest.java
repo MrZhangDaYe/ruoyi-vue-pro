@@ -15,9 +15,10 @@ import org.apache.camel.CamelContext;
 import org.apache.camel.spi.RouteController; // For mocking Camel route operations
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.Spy;
+import org.apache.camel.ServiceStatus;
+import org.junit.jupiter.api.Disabled;
+import org.mockito.*;
+import org.springframework.beans.BeanUtils;
 
 
 import java.time.LocalDateTime;
@@ -41,48 +42,83 @@ public class EsbInterfaceServiceImplTest extends BaseMockitoUnitTest {
     private CamelContext camelContext;
 
     @Mock
-    private RouteController routeController; // Mock for CamelContext.getRouteController()
+    private RouteController routeController;
 
-    // EsbInterfaceConvert is used via INSTANCE, so we don't typically mock it unless specific behavior is needed.
-    // For these tests, the default MapStruct implementation should be fine.
+    @Mock
+    private cn.iocoder.yudao.module.esb.service.mapping.EsbMappingService esbMappingService; // Used by processors
+
+    // EsbInterfaceConvert is used via INSTANCE.
+
+    @Captor
+    private ArgumentCaptor<EsbInterfaceDO> esbInterfaceDOCaptor;
+
 
     @BeforeEach
     void setUp() {
-        // Mock CamelContext to return a mock RouteController
         when(camelContext.getRouteController()).thenReturn(routeController);
     }
 
+    // Updated test to reflect route logic
     @Test
-    void testCreateInterface_Success() {
+    void testCreateInterface_Enabled_ShouldAddRoute() {
         // Arrange
-        EsbInterfaceCreateReqVO reqVO = randomPojo(EsbInterfaceCreateReqVO.class, o -> {
-            o.setStatus(1); // Enabled
-            o.setCode("TEST_CODE_CREATE_SUCCESS");
-            o.setPath("/test/create_success");
-        });
+        EsbInterfaceCreateReqVO reqVO = new EsbInterfaceCreateReqVO();
+        reqVO.setName("Test Route Add");
+        reqVO.setCode("ROUTE_ADD_CODE");
+        reqVO.setPath("/route/add");
+        reqVO.setStatus(1); // Enabled
+
+        EsbInterfaceDO savedInterface = new EsbInterfaceDO();
+        BeanUtils.copyProperties(reqVO, savedInterface);
+        savedInterface.setId(1L);
 
         when(esbInterfaceMapper.selectByCode(reqVO.getCode())).thenReturn(null);
         when(esbInterfaceMapper.selectByPath(reqVO.getPath())).thenReturn(null);
-        // Mock the insert to ensure the ID is set on the passed object (typical MybatisPlus behavior)
         doAnswer(invocation -> {
             EsbInterfaceDO argument = invocation.getArgument(0);
-            argument.setId(1L); // Simulate ID generation
-            return null; // void method
+            argument.setId(1L);
+            return null;
         }).when(esbInterfaceMapper).insert(any(EsbInterfaceDO.class));
 
         // Act
-        Long interfaceId = esbInterfaceService.createInterface(reqVO);
+        esbInterfaceService.createInterface(reqVO);
 
         // Assert
-        assertNotNull(interfaceId);
-        assertEquals(1L, interfaceId);
-        verify(esbInterfaceMapper).insert(argThat(argument ->
-                argument.getCode().equals(reqVO.getCode()) &&
-                argument.getPath().equals(reqVO.getPath()) &&
-                argument.getStatus().equals(reqVO.getStatus())
-        ));
-        // Further verification for addCamelRoute (if it becomes testable, e.g., by checking routeController calls)
+        verify(esbInterfaceMapper).insert(esbInterfaceDOCaptor.capture());
+        EsbInterfaceDO capturedInsert = esbInterfaceDOCaptor.getValue();
+        assertEquals(reqVO.getCode(), capturedInsert.getCode());
+
+        // Verify that addCamelRouteAndSave leads to an update of camelRouteId
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(savedInterface.getId()) &&
+                i.getCamelRouteId() != null &&
+                i.getCamelRouteId().equals(savedInterface.getCode()))); // Assuming routeId is code
     }
+
+    @Test
+    void testCreateInterface_Disabled_ShouldNotAddRoute() {
+        // Arrange
+        EsbInterfaceCreateReqVO reqVO = new EsbInterfaceCreateReqVO();
+        reqVO.setName("Test No Route");
+        reqVO.setCode("NO_ROUTE_CODE");
+        reqVO.setPath("/no/route");
+        reqVO.setStatus(0); // Disabled
+
+        when(esbInterfaceMapper.selectByCode(reqVO.getCode())).thenReturn(null);
+        when(esbInterfaceMapper.selectByPath(reqVO.getPath())).thenReturn(null);
+        doAnswer(invocation -> {
+            EsbInterfaceDO argument = invocation.getArgument(0);
+            argument.setId(1L);
+            return null;
+        }).when(esbInterfaceMapper).insert(any(EsbInterfaceDO.class));
+
+        // Act
+        esbInterfaceService.createInterface(reqVO);
+
+        // Assert
+        verify(esbInterfaceMapper).insert(any(EsbInterfaceDO.class));
+        verify(esbInterfaceMapper, never()).updateById(argThat(i -> i.getCamelRouteId() != null));
+    }
+
 
     @Test
     void testCreateInterface_CodeExists_ThrowsException() {
@@ -115,33 +151,69 @@ public class EsbInterfaceServiceImplTest extends BaseMockitoUnitTest {
         // Arrange
         EsbInterfaceUpdateReqVO reqVO = randomPojo(EsbInterfaceUpdateReqVO.class, o -> {
             o.setId(1L);
-            o.setStatus(1); // Enabled
+            o.setStatus(1); // Enabled -> new route to be added
             o.setCode("UPDATED_CODE");
             o.setPath("/updated/path");
         });
-        EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
+        EsbInterfaceDO oldDO = randomPojo(EsbInterfaceDO.class, o -> {
             o.setId(1L);
-            o.setCode("ORIGINAL_CODE"); // Different original code
-            o.setPath("/original/path"); // Different original path
-            o.setStatus(0); // Original status disabled
+            o.setCode("ORIGINAL_CODE");
+            o.setPath("/original/path");
+            o.setStatus(0); // Was disabled
+            o.setCamelRouteId(null); // No old route
         });
 
-        when(esbInterfaceMapper.selectById(reqVO.getId())).thenReturn(existingDO);
-        when(esbInterfaceMapper.selectByCode(reqVO.getCode())).thenReturn(null); // No conflict with new code
-        when(esbInterfaceMapper.selectByPath(reqVO.getPath())).thenReturn(null); // No conflict with new path
+        when(esbInterfaceMapper.selectById(reqVO.getId())).thenReturn(oldDO);
+        when(esbInterfaceMapper.selectByCode(reqVO.getCode())).thenReturn(null);
+        when(esbInterfaceMapper.selectByPath(reqVO.getPath())).thenReturn(null);
 
         // Act
         esbInterfaceService.updateInterface(reqVO);
 
         // Assert
-        verify(esbInterfaceMapper).updateById(argThat(argument ->
-                argument.getId().equals(reqVO.getId()) &&
-                argument.getCode().equals(reqVO.getCode()) &&
-                argument.getPath().equals(reqVO.getPath()) &&
-                argument.getStatus().equals(reqVO.getStatus())
-        ));
-        // Further verification for updateCamelRoute
+        // First updateById is for the main fields
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getCode().equals(reqVO.getCode())));
+        // Second updateById is for setting the camelRouteId
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(reqVO.getId()) &&
+                i.getCamelRouteId() != null &&
+                i.getCamelRouteId().equals(reqVO.getCode())));
+        // Verify no old route was removed (as it was null)
+        verify(routeController, never()).stopRoute(anyString());
+        verify(camelContext, never()).removeRoute(anyString());
     }
+
+    @Test
+    void testUpdateInterface_EnabledToDisabled_ShouldRemoveRouteAndClearId() {
+        // Arrange
+        EsbInterfaceUpdateReqVO reqVO = randomPojo(EsbInterfaceUpdateReqVO.class, o -> {
+            o.setId(1L);
+            o.setStatus(0); // Disabled
+            o.setCode("CODE_TO_DISABLE");
+        });
+        EsbInterfaceDO oldDO = randomPojo(EsbInterfaceDO.class, o -> {
+            o.setId(1L);
+            o.setStatus(1); // Was enabled
+            o.setCamelRouteId("route_CODE_TO_DISABLE");
+            o.setCode("CODE_TO_DISABLE");
+        });
+
+        when(esbInterfaceMapper.selectById(reqVO.getId())).thenReturn(oldDO);
+        when(esbInterfaceMapper.selectByCode(reqVO.getCode())).thenReturn(oldDO); // No code conflict
+        when(camelContext.getRouteController().getRouteStatus("route_CODE_TO_DISABLE")).thenReturn(ServiceStatus.Started);
+
+
+        // Act
+        esbInterfaceService.updateInterface(reqVO);
+
+        // Assert
+        verify(routeController).stopRoute("route_CODE_TO_DISABLE");
+        verify(camelContext).removeRoute("route_CODE_TO_DISABLE");
+        // First updateById is for the main fields (status=0)
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getStatus().equals(0)));
+        // Second updateById is for clearing the camelRouteId
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(reqVO.getId()) && i.getCamelRouteId() == null));
+    }
+
 
     @Test
     void testUpdateInterface_NotFound_ThrowsException() {
@@ -176,22 +248,26 @@ public class EsbInterfaceServiceImplTest extends BaseMockitoUnitTest {
     }
     
     @Test
-    void testDeleteInterface_Success() {
+    void testDeleteInterface_Success_WithExistingRoute() {
         // Arrange
         Long interfaceId = 1L;
+        String routeId = "route_DELETE_ME";
         EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
             o.setId(interfaceId);
-            o.setCamelRouteId("test-route-id"); // Assume a route exists
-            o.setStatus(1); // Enabled
+            o.setCamelRouteId(routeId);
+            o.setCode("DELETE_ME");
+            o.setStatus(1);
         });
         when(esbInterfaceMapper.selectById(interfaceId)).thenReturn(existingDO);
+        when(camelContext.getRouteController().getRouteStatus(routeId)).thenReturn(ServiceStatus.Started);
 
         // Act
         esbInterfaceService.deleteInterface(interfaceId);
 
         // Assert
+        verify(routeController).stopRoute(routeId);
+        verify(camelContext).removeRoute(routeId);
         verify(esbInterfaceMapper).deleteById(interfaceId);
-        // Further verification for removeCamelRoute
     }
 
     @Test
@@ -236,32 +312,116 @@ public class EsbInterfaceServiceImplTest extends BaseMockitoUnitTest {
 
     // TODO: Add tests for getInterfaceList (for export)
 
-    // TODO: Add tests for startInterfaceRoute, stopInterfaceRoute, refreshInterfaceRoute
-    // These will primarily verify interaction with CamelContext's RouteController
-    // and ensure that EsbInterfaceDO is fetched and validated.
-    // Example for startInterfaceRoute:
-    /*
+    // TODO: Add tests for getInterfaceList (for export)
+
     @Test
     void testStartInterfaceRoute_Success() {
         // Arrange
         Long interfaceId = 1L;
         EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
             o.setId(interfaceId);
-            o.setStatus(1); // Enabled
+            o.setStatus(0); // Currently disabled
             o.setCode("START_ROUTE_TEST");
+            o.setCamelRouteId(null); // No existing route
         });
         when(esbInterfaceMapper.selectById(interfaceId)).thenReturn(existingDO);
-        // when(routeController.getRouteStatus(anyString())).thenReturn(ServiceStatus.Stopped); // If checking status
 
         // Act
         esbInterfaceService.startInterfaceRoute(interfaceId);
 
         // Assert
-        verify(esbInterfaceMapper).selectById(interfaceId);
-        // Verify interactions with routeController, e.g., startRoute(expectedRouteId)
-        // This requires a more detailed understanding of how addCamelRoute/updateCamelRoute/removeCamelRoute
-        // interact with CamelContext if they were fully implemented.
-        // For now, it would just log as per current implementation.
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(interfaceId) && i.getStatus().equals(1))); // Status updated
+        // Verify new route is added (implicitly, camelRouteId would be set)
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(interfaceId) && i.getCamelRouteId().equals(existingDO.getCode())));
     }
-    */
+
+    @Test
+    void testStopInterfaceRoute_Success() {
+        // Arrange
+        Long interfaceId = 1L;
+        String routeId = "route_STOP_ME";
+        EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
+            o.setId(interfaceId);
+            o.setStatus(1); // Currently enabled
+            o.setCode("STOP_ME");
+            o.setCamelRouteId(routeId);
+        });
+        when(esbInterfaceMapper.selectById(interfaceId)).thenReturn(existingDO);
+        when(camelContext.getRouteController().getRouteStatus(routeId)).thenReturn(ServiceStatus.Started);
+
+        // Act
+        esbInterfaceService.stopInterfaceRoute(interfaceId);
+
+        // Assert
+        verify(routeController).stopRoute(routeId);
+        verify(camelContext).removeRoute(routeId);
+        // Verify camelRouteId is cleared in DB
+        verify(esbInterfaceMapper, times(2)).updateById(esbInterfaceDOCaptor.capture()); // Once for routeId, once for status
+        List<EsbInterfaceDO> capturedUpdates = esbInterfaceDOCaptor.getAllValues();
+        assertTrue(capturedUpdates.stream().anyMatch(u -> u.getId().equals(interfaceId) && u.getCamelRouteId() == null));
+        assertTrue(capturedUpdates.stream().anyMatch(u -> u.getId().equals(interfaceId) && u.getStatus().equals(0))); // Status updated
+    }
+
+    @Test
+    void testRefreshInterfaceRoute_Enabled_ShouldReAddRoute() {
+        // Arrange
+        Long interfaceId = 1L;
+        String oldRouteId = "route_OLD_REFRESH";
+        String newRouteId = "REFRESH_CODE"; // Code is used as new routeId
+        EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
+            o.setId(interfaceId);
+            o.setStatus(1); // Enabled
+            o.setCode(newRouteId);
+            o.setCamelRouteId(oldRouteId);
+        });
+        when(esbInterfaceMapper.selectById(interfaceId)).thenReturn(existingDO);
+        when(camelContext.getRouteController().getRouteStatus(oldRouteId)).thenReturn(ServiceStatus.Started);
+
+        // Act
+        esbInterfaceService.refreshInterfaceRoute(interfaceId);
+
+        // Assert
+        verify(routeController).stopRoute(oldRouteId);
+        verify(camelContext).removeRoute(oldRouteId);
+        // Verify new route is added
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(interfaceId) && i.getCamelRouteId().equals(newRouteId)));
+    }
+
+    @Test
+    void testRefreshInterfaceRoute_Disabled_ShouldRemoveAndNotAddRoute() {
+        // Arrange
+        Long interfaceId = 1L;
+        String oldRouteId = "route_OLD_DISABLED_REFRESH";
+        EsbInterfaceDO existingDO = randomPojo(EsbInterfaceDO.class, o -> {
+            o.setId(interfaceId);
+            o.setStatus(0); // Disabled
+            o.setCode("DISABLED_REFRESH_CODE");
+            o.setCamelRouteId(oldRouteId);
+        });
+        when(esbInterfaceMapper.selectById(interfaceId)).thenReturn(existingDO);
+        when(camelContext.getRouteController().getRouteStatus(oldRouteId)).thenReturn(ServiceStatus.Started);
+
+        // Act
+        esbInterfaceService.refreshInterfaceRoute(interfaceId);
+
+        // Assert
+        verify(routeController).stopRoute(oldRouteId);
+        verify(camelContext).removeRoute(oldRouteId);
+        // Verify camelRouteId is cleared in DB (and not re-added)
+        verify(esbInterfaceMapper).updateById(argThat(i -> i.getId().equals(interfaceId) && i.getCamelRouteId() == null));
+        // Verify no new route was attempted to be built and started (by checking no further updateById with a non-null camelRouteId)
+        Mockito.clearInvocations(esbInterfaceMapper); // Clear previous updateById for routeId=null
+        esbInterfaceService.refreshInterfaceRoute(interfaceId); // Call again to check
+        verify(esbInterfaceMapper, never()).updateById(argThat(i -> i.getCamelRouteId() != null)); // Ensure no new route ID set
+    }
+
+    // Placeholder for addCamelRouteAndSave specific tests if needed, though mostly covered by CRUD operations.
+    @Test
+    @Disabled("buildAndStartCamelRoute is private and complex, tested via public methods")
+    void testAddCamelRouteAndSave_WhenBuildFails() {
+        // This would require deeper changes to make buildAndStartCamelRoute testable
+        // or more complex mocking if it were not private.
+        // For now, this scenario (buildAndStartCamelRoute returning null) is partially covered
+        // by ensuring camelRouteId is not updated in DB if build fails.
+    }
 }

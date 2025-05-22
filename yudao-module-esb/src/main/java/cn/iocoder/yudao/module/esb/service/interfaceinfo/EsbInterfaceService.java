@@ -80,4 +80,12 @@ public interface EsbInterfaceService {
      */
     void refreshInterfaceRoute(Long id);
 
+    /**
+     * Dynamically adds a Camel route based on the interface definition and saves the generated route ID.
+     * If the interface is not enabled, this method might choose not to add the route or log a warning.
+     *
+     * @param interfaceDO The interface definition.
+     */
+    void addCamelRouteAndSave(cn.iocoder.yudao.module.esb.dal.dataobject.interfaceinfo.EsbInterfaceDO interfaceDO);
+
 }
