@@ -50,6 +50,17 @@
             <artifactId>camel-bean-starter</artifactId>
             <version>4.8.7</version>
         </dependency>
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-cxf-starter</artifactId>
+            <version>4.8.7</version>
+        </dependency>
+        <!-- camel-freemarker-starter is already present, ensuring it's here -->
+        <dependency>
+            <groupId>org.apache.camel.springboot</groupId>
+            <artifactId>camel-jacksonxml-starter</artifactId>
+            <version>4.8.7</version>
+        </dependency>
 
         <!-- Yudao Common -->
         <dependency>

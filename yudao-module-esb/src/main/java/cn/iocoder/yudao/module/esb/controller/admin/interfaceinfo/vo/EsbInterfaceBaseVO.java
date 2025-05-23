@@ -70,4 +70,25 @@ public class EsbInterfaceBaseVO {
     @Schema(description = "备注", example = "这是一个用于查询用户信息的ESB接口")
     @Size(max = 500, message = "备注长度不能超过500个字符")
     private String remark;
+
+    @Schema(description = "WSDL文件的URL (SOAP)", example = "http://example.com/service?wsdl")
+    @URL(message = "WSDL URL格式不正确") // Basic URL validation
+    private String wsdlUrl;
+
+    @Schema(description = "SOAP服务名称 (SOAP), 格式: {namespaceURI}localPart", example = "{http://esb.iocoder.cn/}EsbDemoService")
+    @Size(max = 255, message = "SOAP服务名称长度不能超过255个字符")
+    private String soapServiceName;
+
+    @Schema(description = "SOAP端口名称 (SOAP), 格式: {namespaceURI}localPart", example = "{http://esb.iocoder.cn/}EsbDemoServicePort")
+    @Size(max = 255, message = "SOAP端口名称长度不能超过255个字符")
+    private String soapPortName;
+
+    @Schema(description = "SOAP操作名称 (SOAP)", example = "doSomething")
+    @Size(max = 255, message = "SOAP操作名称长度不能超过255个字符")
+    private String soapOperationName;
+
+    @Schema(description = "CXF数据格式 (SOAP), 例如: PAYLOAD, POJO. 默认为 PAYLOAD.", example = "PAYLOAD")
+    @Size(max = 50, message = "数据格式长度不能超过50个字符")
+    // Consider an Enum validation if a fixed set of values is defined
+    private String dataFormat;
 }

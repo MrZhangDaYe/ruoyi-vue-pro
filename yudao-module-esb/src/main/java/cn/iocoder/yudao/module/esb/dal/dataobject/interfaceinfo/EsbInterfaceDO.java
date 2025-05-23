@@ -104,4 +104,40 @@ public class EsbInterfaceDO extends TenantBaseDO {
      */
     private String remark;
 
+    /**
+     * WSDL文件的URL (SOAP)
+     */
+    @TableField("wsdl_url")
+    private String wsdlUrl;
+
+    /**
+     * SOAP服务名称 (SOAP)
+     * 格式: {namespaceURI}localPart
+     * 例如: {http://esb.iocoder.cn/}EsbDemoService
+     */
+    @TableField("soap_service_name")
+    private String soapServiceName;
+
+    /**
+     * SOAP端口名称 (SOAP)
+     * 格式: {namespaceURI}localPart (通常与serviceName的namespace一致)
+     * 例如: {http://esb.iocoder.cn/}EsbDemoServicePort
+     */
+    @TableField("soap_port_name")
+    private String soapPortName;
+
+    /**
+     * SOAP操作名称 (SOAP)
+     * 用于客户端模式指定调用哪个operation
+     */
+    @TableField("soap_operation_name")
+    private String soapOperationName;
+
+    /**
+     * CXF数据格式 (SOAP)
+     * 例如: PAYLOAD, POJO. 默认为 PAYLOAD.
+     */
+    @TableField("data_format")
+    private String dataFormat; // Consider an Enum for this in future if values are fixed set
+
 }

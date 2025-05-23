@@ -50,6 +50,9 @@ public class EsbInterfaceServiceImpl implements EsbInterfaceService {
 
         // 插入
         EsbInterfaceDO esbInterface = EsbInterfaceConvert.INSTANCE.convert(createReqVO);
+        if (StrUtil.isBlank(esbInterface.getDataFormat())) {
+            esbInterface.setDataFormat("PAYLOAD"); // Set default value
+        }
         esbInterfaceMapper.insert(esbInterface); // esbInterface gets ID populated by MyBatis
 
         if (Integer.valueOf(1).equals(esbInterface.getStatus())) { // Assuming 1 is enabled
@@ -67,6 +70,9 @@ public class EsbInterfaceServiceImpl implements EsbInterfaceService {
         validateInterfaceUnique(updateReqVO.getId(), updateReqVO.getCode(), updateReqVO.getPath());
 
         EsbInterfaceDO updatedInterfaceDO = EsbInterfaceConvert.INSTANCE.convert(updateReqVO);
+        if (StrUtil.isBlank(updatedInterfaceDO.getDataFormat())) {
+            updatedInterfaceDO.setDataFormat("PAYLOAD"); // Set default value if blank during update
+        }
         EsbInterfaceDO oldInterfaceDO = esbInterfaceMapper.selectById(updatedInterfaceDO.getId());
         if (oldInterfaceDO == null) { // Should be caught by validateInterfaceExists, but as a safeguard
             throw exception(ErrorCodeConstants.INTERFACE_NOT_EXISTS);
@@ -168,29 +174,69 @@ import cn.iocoder.yudao.module.esb.camel.processor.EsbResponseTransformProcessor
 
         final String routeId = interfaceDO.getCode();
         final String sourceUri;
-        if ("HTTP".equalsIgnoreCase(interfaceDO.getProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getProtocol())) {
+        String protocol = StrUtil.trimToEmpty(interfaceDO.getProtocol()).toUpperCase();
+
+        if ("HTTP".equals(protocol) || "HTTPS".equals(protocol)) {
             sourceUri = "platform-http:/" + interfaceDO.getPath().replaceAll("^/+", "")
                     + "?httpMethodRestrict=GET,POST"; // TODO: Make methods configurable
+        } else if ("SOAP".equals(protocol)) {
+            // Ensure required SOAP fields are present
+            if (StrUtil.isAnyBlank(interfaceDO.getPath(), interfaceDO.getWsdlUrl(), 
+                                   interfaceDO.getSoapServiceName(), interfaceDO.getSoapPortName())) {
+                log.error("Interface {} (SOAP) is missing one or more required fields for CXF server: path, wsdlUrl, soapServiceName, soapPortName.", routeId);
+                return null;
+            }
+            String dataFormat = StrUtil.isNotBlank(interfaceDO.getDataFormat()) ? interfaceDO.getDataFormat() : "PAYLOAD";
+            // For PAYLOAD mode, serviceClass might not be strictly needed if WSDL is rich enough.
+            sourceUri = String.format("cxf:/%s?wsdlURL=%s&serviceName=%s&portName=%s&dataFormat=%s",
+                    interfaceDO.getPath().replaceAll("^/+", ""),
+                    interfaceDO.getWsdlUrl(),
+                    interfaceDO.getSoapServiceName(),
+                    interfaceDO.getSoapPortName(),
+                    dataFormat);
+            log.info("Configured SOAP (CXF) sourceUri for {}: {}", routeId, sourceUri);
         } else {
-            log.error("Unsupported protocol {} for interface code: {}", interfaceDO.getProtocol(), interfaceDO.getCode());
+            log.error("Unsupported protocol {} for interface code: {}", interfaceDO.getProtocol(), routeId);
             return null;
         }
 
-        final String forwardUri; // This needs to be effectively final for use in lambda if choice is complex
-        if (StrUtil.isNotBlank(interfaceDO.getForwardInterfaceAddress()) && 
-            ("HTTP".equalsIgnoreCase(interfaceDO.getForwardProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getForwardProtocol()))) {
+        final String forwardUri;
+        String forwardProtocol = StrUtil.trimToEmpty(interfaceDO.getForwardProtocol()).toUpperCase();
+
+        if (StrUtil.isBlank(interfaceDO.getForwardInterfaceAddress())) {
+            forwardUri = null;
+            log.warn("Forwarding URI for interface {} is not configured. Forwarding will be skipped.", routeId);
+        } else if ("HTTP".equals(forwardProtocol) || "HTTPS".equals(forwardProtocol)) {
             String address = interfaceDO.getForwardInterfaceAddress();
             if (!address.toLowerCase().startsWith("http://") && !address.toLowerCase().startsWith("https://")) {
-                address = interfaceDO.getForwardProtocol().toLowerCase() + "://" + address;
+                address = forwardProtocol.toLowerCase() + "://" + address;
             }
             // TODO: Add timeouts from interfaceDO.getTimeoutMilliseconds()
-            // Example: + "&httpClient.connectTimeout=xxxx&httpClient.socketTimeout=yyyy"
             forwardUri = address
                     + "?bridgeEndpoint=true"
                     + "&throwExceptionOnFailure=false";
+        } else if ("SOAP".equals(forwardProtocol)) {
+            // Ensure required SOAP client fields are present
+            if (StrUtil.isAnyBlank(interfaceDO.getForwardInterfaceAddress(), interfaceDO.getWsdlUrl(),
+                                   interfaceDO.getSoapServiceName(), interfaceDO.getSoapPortName())) {
+                log.error("Interface {} (SOAP forward) is missing one or more required fields for CXF client: forwardAddress, wsdlUrl, soapServiceName, soapPortName.", routeId);
+                return null;
+            }
+            String dataFormatClient = StrUtil.isNotBlank(interfaceDO.getDataFormat()) ? interfaceDO.getDataFormat() : "PAYLOAD";
+            String operationNamePart = StrUtil.isNotBlank(interfaceDO.getSoapOperationName())
+                ? "&defaultOperationName=" + interfaceDO.getSoapOperationName() : "";
+
+            forwardUri = String.format("cxf://%s?wsdlURL=%s&serviceName=%s&portName=%s%s&dataFormat=%s&bridgeEndpoint=true&throwExceptionOnFailure=false",
+                    interfaceDO.getForwardInterfaceAddress(), 
+                    interfaceDO.getWsdlUrl(),
+                    interfaceDO.getSoapServiceName(),
+                    interfaceDO.getSoapPortName(),
+                    operationNamePart,
+                    dataFormatClient);
+            log.info("Configured SOAP (CXF) forwardUri for {}: {}", routeId, forwardUri);
         } else {
-            forwardUri = null; // Explicitly null if not valid
-            log.warn("Forwarding URI for interface {} is not configured or protocol is not HTTP/S. Forwarding will be skipped.", routeId);
+            log.error("Unsupported forward protocol {} for interface code: {}", interfaceDO.getForwardProtocol(), routeId);
+            return null; 
         }
 
         try {

@@ -127,8 +127,10 @@ public class EsbRequestTransformProcessorTest {
     }
 
     @Test
-    void process_ValidJsonataTransformation_ShouldTransformBody() throws Exception {
+    void process_ValidJsonataTransformation_ShouldTransformBody_WhenForwardNotSoap() throws Exception {
         // Arrange
+        realInterfaceDO.setForwardProtocol("HTTP"); // Ensure JSONata path is taken
+
         String originalBody = "{\"name\":\"world\"}";
         String transformedBody = "HELLO, WORLD"; // Expected output from JSONata: "$uppercase('Hello, ' & name)"
         String jsonataExpression = "$uppercase('Hello, ' & name)";
@@ -217,6 +219,9 @@ public class EsbRequestTransformProcessorTest {
         mappingRule.setStatus(1);
         mappingRule.setContentType("application/json");
         mappingRule.setMappingTemplate("$uppercase(key)");
+        // Ensure it doesn't try to go through SOAP path if body is blank for JSONata
+        realInterfaceDO.setForwardProtocol("HTTP");
+
 
         when(mockMappingService.getMappingByInterfaceIdAndType(realInterfaceDO.getId(), "REQUEST")).thenReturn(mappingRule);
         when(mockInMessage.getBody(String.class)).thenReturn(originalBody);
@@ -226,5 +231,97 @@ public class EsbRequestTransformProcessorTest {
 
         // Assert
         verify(mockInMessage, never()).setBody(any()); // No transformation
+    }
+
+    // --- Tests for JSON to SOAP (FreeMarker) Transformation ---
+
+    @Test
+    void process_JsonToSoap_FreeMarker_Success() throws Exception {
+        // Arrange
+        String originalJsonBody = "{\"user\":{\"name\":\"Pikachu\", \"id\":\"025\"}}";
+        // Example FreeMarker template for a simple SOAP envelope
+        String freemarkerTemplate = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:typ=\"http://example.com/types\"><soapenv:Header/><soapenv:Body><typ:greet><typ:name>${user.name}</typ:name><typ:id>${user.id}</typ:id></typ:greet></soapenv:Body></soapenv:Envelope>";
+        String expectedSoapXml = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:typ=\"http://example.com/types\"><soapenv:Header/><soapenv:Body><typ:greet><typ:name>Pikachu</typ:name><typ:id>025</typ:id></typ:greet></soapenv:Body></soapenv:Envelope>";
+
+        EsbMappingDO mappingRule = new EsbMappingDO();
+        mappingRule.setStatus(1);
+        mappingRule.setContentType("application/json"); // Input is JSON
+        mappingRule.setMappingTemplate(freemarkerTemplate);
+
+        // Simulate conditions for JSON to SOAP: HTTP In, SOAP Out
+        realInterfaceDO.setProtocol("HTTP");
+        realInterfaceDO.setForwardProtocol("SOAP");
+
+        when(mockMappingService.getMappingByInterfaceIdAndType(realInterfaceDO.getId(), "REQUEST")).thenReturn(mappingRule);
+        when(mockInMessage.getBody(String.class)).thenReturn(originalJsonBody);
+        // JsonUtils.parseObject is called internally. For this test, we assume it works
+        // and the FreeMarker template processing is the focus.
+
+        // Act
+        requestTransformProcessor.process(mockExchange);
+
+        // Assert
+        verify(mockInMessage).setBody(expectedSoapXml);
+        verify(mockInMessage).setHeader(Exchange.CONTENT_TYPE, "text/xml; charset=utf-8");
+        assertTrue(realLogBuilder.build().getSuccess() == null || realLogBuilder.build().getSuccess());
+    }
+
+    @Test
+    void process_JsonToSoap_FreeMarker_JsonParseException() throws Exception {
+        // Arrange
+        String invalidJsonBody = "{\"user\":{\"name\":\"Pikachu\""; // Invalid JSON (missing closing bracket and quote)
+        String freemarkerTemplate = "<test>${user.name}</test>";
+
+        EsbMappingDO mappingRule = new EsbMappingDO();
+        mappingRule.setStatus(1);
+        mappingRule.setContentType("application/json");
+        mappingRule.setMappingTemplate(freemarkerTemplate);
+
+        realInterfaceDO.setForwardProtocol("SOAP"); // Trigger FreeMarker path
+
+        when(mockMappingService.getMappingByInterfaceIdAndType(realInterfaceDO.getId(), "REQUEST")).thenReturn(mappingRule);
+        when(mockInMessage.getBody(String.class)).thenReturn(invalidJsonBody);
+        
+        // This test relies on JsonUtils.parseObject throwing an exception.
+
+        // Act & Assert
+        RuntimeException thrownException = assertThrows(RuntimeException.class, () -> {
+            requestTransformProcessor.process(mockExchange);
+        });
+
+        assertTrue(thrownException.getMessage().contains("Request transformation failed: Invalid JSON input"));
+        assertFalse(realLogBuilder.build().getSuccess());
+        assertNotNull(realLogBuilder.build().getErrorMessage());
+        assertTrue(realLogBuilder.build().getErrorMessage().contains("Invalid JSON input"));
+    }
+
+    @Test
+    void process_JsonToSoap_FreeMarker_TemplateProcessException() throws Exception {
+        // Arrange
+        String originalJsonBody = "{\"user\":{\"name\":\"Pikachu\"}}";
+        // Malformed FreeMarker template (e.g., unclosed expression)
+        String invalidFreemarkerTemplate = "<test>${user.name"; // Missing closing '}'
+
+        EsbMappingDO mappingRule = new EsbMappingDO();
+        mappingRule.setStatus(1);
+        mappingRule.setContentType("application/json");
+        mappingRule.setMappingTemplate(invalidFreemarkerTemplate);
+
+        realInterfaceDO.setForwardProtocol("SOAP");
+
+        when(mockMappingService.getMappingByInterfaceIdAndType(realInterfaceDO.getId(), "REQUEST")).thenReturn(mappingRule);
+        when(mockInMessage.getBody(String.class)).thenReturn(originalJsonBody);
+
+        // This test relies on the actual FreeMarker engine throwing an exception.
+
+        // Act & Assert
+        RuntimeException thrownException = assertThrows(RuntimeException.class, () -> {
+            requestTransformProcessor.process(mockExchange);
+        });
+
+        assertTrue(thrownException.getMessage().contains("Request transformation failed (FreeMarker to SOAP)"));
+        assertFalse(realLogBuilder.build().getSuccess());
+        assertNotNull(realLogBuilder.build().getErrorMessage());
+        assertTrue(realLogBuilder.build().getErrorMessage().contains("Request transformation failed (FreeMarker to SOAP)"));
     }
 }
