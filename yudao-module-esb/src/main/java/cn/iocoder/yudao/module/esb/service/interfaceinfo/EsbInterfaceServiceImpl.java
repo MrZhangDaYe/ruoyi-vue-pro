@@ -39,6 +39,9 @@ public class EsbInterfaceServiceImpl implements EsbInterfaceService {
     @Resource
     private cn.iocoder.yudao.module.esb.service.mapping.EsbMappingService esbMappingService; // Added EsbMappingService
 
+    @Resource
+    private cn.iocoder.yudao.module.esb.service.log.EsbLogService esbLogService; // Added EsbLogService
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createInterface(EsbInterfaceCreateReqVO createReqVO) {
@@ -140,109 +143,113 @@ public class EsbInterfaceServiceImpl implements EsbInterfaceService {
         return EsbInterfaceConvert.INSTANCE.convertList(list);
     }
 
+// Ensure these imports are present in EsbInterfaceServiceImpl.java
+import cn.iocoder.yudao.module.esb.camel.processor.logging.EsbInitialLogProcessor;
+import cn.iocoder.yudao.module.esb.camel.processor.logging.EsbPreForwardLogProcessor;
+import cn.iocoder.yudao.module.esb.camel.processor.logging.EsbPostForwardLogProcessor;
+import cn.iocoder.yudao.module.esb.camel.processor.logging.EsbFinalLogProcessor;
+// import cn.iocoder.yudao.module.esb.service.log.EsbLogService; // Already injected via @Resource
+import org.apache.camel.Exchange; // For HTTP_RESPONSE_CODE constant
+import org.apache.camel.Predicate; // Import for Predicate
+
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.LoggingLevel;
-// import org.apache.camel.model.RouteDefinition; // May not be needed if adding directly
-import cn.iocoder.yudao.module.esb.camel.processor.EsbRequestTransformProcessor; // Import new processors
-import cn.iocoder.yudao.module.esb.camel.processor.EsbResponseTransformProcessor; // Import new processors
+import cn.iocoder.yudao.module.esb.camel.processor.EsbRequestTransformProcessor;
+import cn.iocoder.yudao.module.esb.camel.processor.EsbResponseTransformProcessor;
 
 // ... inside EsbInterfaceServiceImpl ...
     // =================== Camel Route Management ===================
 
     private String buildAndStartCamelRoute(EsbInterfaceDO interfaceDO) {
-       if (interfaceDO == null || !Integer.valueOf(1).equals(interfaceDO.getStatus())) {
-           log.warn("Interface {} is not enabled or is null, skipping Camel route creation.", interfaceDO != null ? interfaceDO.getCode() : "null");
-           return null;
-       }
+        if (interfaceDO == null || !Integer.valueOf(1).equals(interfaceDO.getStatus())) {
+            log.warn("Interface {} is not enabled or is null, skipping Camel route creation.", interfaceDO != null ? interfaceDO.getCode() : "null");
+            return null;
+        }
 
-       final String routeId = interfaceDO.getCode(); // Use code as route ID for uniqueness and readability
-       final String sourceUri;
-       // Assuming HTTP/HTTPS for now. TODO: Expand for other protocols.
-       if ("HTTP".equalsIgnoreCase(interfaceDO.getProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getProtocol())) {
-           // platform-http component is better for exposing REST services in Spring Boot
-           sourceUri = "platform-http:/" + interfaceDO.getPath().replaceAll("^/+", "") // Ensure path doesn't start with multiple slashes
-                   + "?httpMethodRestrict=GET,POST"; // TODO: Make methods configurable from interfaceDO
-       } else {
-           log.error("Unsupported protocol {} for interface code: {}", interfaceDO.getProtocol(), interfaceDO.getCode());
-           return null;
-       }
+        final String routeId = interfaceDO.getCode();
+        final String sourceUri;
+        if ("HTTP".equalsIgnoreCase(interfaceDO.getProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getProtocol())) {
+            sourceUri = "platform-http:/" + interfaceDO.getPath().replaceAll("^/+", "")
+                    + "?httpMethodRestrict=GET,POST"; // TODO: Make methods configurable
+        } else {
+            log.error("Unsupported protocol {} for interface code: {}", interfaceDO.getProtocol(), interfaceDO.getCode());
+            return null;
+        }
 
-       final String forwardUri;
-       if (StrUtil.isNotEmpty(interfaceDO.getForwardInterfaceAddress())) {
-           if ("HTTP".equalsIgnoreCase(interfaceDO.getForwardProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getForwardProtocol())) {
-               String address = interfaceDO.getForwardInterfaceAddress();
-               // Ensure address starts with http:// or https://
-               if (!address.toLowerCase().startsWith("http://") && !address.toLowerCase().startsWith("https://")) {
-                    address = interfaceDO.getForwardProtocol().toLowerCase() + "://" + address;
-               }
-               forwardUri = address
-                       + "?bridgeEndpoint=true" // Important for acting as a transparent proxy
-                       + "&throwExceptionOnFailure=false"; // Handle errors manually to enable logging/custom responses
-                       // TODO: Add timeouts: "&httpClient.connectTimeout=" + interfaceDO.getTimeoutMilliseconds() + "&httpClient.socketTimeout=" + interfaceDO.getTimeoutMilliseconds()
-           } else {
-               log.error("Unsupported forward protocol {} for interface code: {}", interfaceDO.getForwardProtocol(), interfaceDO.getCode());
-               return null;
-           }
-       } else {
-            // If forward address is not set, this route might be a direct response or error.
-            // For now, we'll assume a forward URI is mandatory for this example structure.
-            // A more robust implementation would handle routes without a .toD() if not forwarding.
-            log.warn("Forward address is not configured for interface code: {}. Route will not forward.", interfaceDO.getCode());
-            forwardUri = null; // Or handle as a direct response route
-       }
+        final String forwardUri; // This needs to be effectively final for use in lambda if choice is complex
+        if (StrUtil.isNotBlank(interfaceDO.getForwardInterfaceAddress()) && 
+            ("HTTP".equalsIgnoreCase(interfaceDO.getForwardProtocol()) || "HTTPS".equalsIgnoreCase(interfaceDO.getForwardProtocol()))) {
+            String address = interfaceDO.getForwardInterfaceAddress();
+            if (!address.toLowerCase().startsWith("http://") && !address.toLowerCase().startsWith("https://")) {
+                address = interfaceDO.getForwardProtocol().toLowerCase() + "://" + address;
+            }
+            // TODO: Add timeouts from interfaceDO.getTimeoutMilliseconds()
+            // Example: + "&httpClient.connectTimeout=xxxx&httpClient.socketTimeout=yyyy"
+            forwardUri = address
+                    + "?bridgeEndpoint=true"
+                    + "&throwExceptionOnFailure=false";
+        } else {
+            forwardUri = null; // Explicitly null if not valid
+            log.warn("Forwarding URI for interface {} is not configured or protocol is not HTTP/S. Forwarding will be skipped.", routeId);
+        }
 
+        try {
+            RouteBuilder routeBuilder = new RouteBuilder() {
+                @Override
+                public void configure() throws Exception {
+                    errorHandler(deadLetterChannel("log:esb.error?level=ERROR&showAll=true&multiline=true&showStackTrace=true")
+                            .useOriginalMessage()
+                            .maximumRedeliveries(interfaceDO.getRetryCount() != null ? interfaceDO.getRetryCount() : 0)
+                            .redeliveryDelay(1000)); // TODO: Make delay configurable
 
-       try {
-           RouteBuilder routeBuilder = new RouteBuilder() {
-               @Override
-               public void configure() throws Exception {
-                   // Define error handler (basic for now, TODO: enhance with retries)
-                   errorHandler(deadLetterChannel("log:esb.error?level=ERROR&showAll=true")
-                           .useOriginalMessage().maximumRedeliveries(interfaceDO.getRetryCount() != null ? interfaceDO.getRetryCount() : 0)
-                           .redeliveryDelay(1000)); // TODO: Make delay configurable
+                    // Define the predicate for checking if forwardUri is not blank
+                    Predicate forwardUriNotBlank = exchange -> StrUtil.isNotBlank(forwardUri);
 
-                   from(sourceUri)
-                       .routeId(routeId)
-                       .log(LoggingLevel.INFO, "ESB Route " + routeId + " received request. Headers: ${headers}")
-                       // TODO: Integrate with EsbLogService for request logging (headers, body)
+                    from(sourceUri)
+                        .routeId(routeId)
+                        .streamCaching() // Enable stream caching
+                        .setProperty("esbInterfaceDO", constant(interfaceDO)) // Store interfaceDO for processors
 
-                       .process(new EsbRequestTransformProcessor(interfaceDO, esbMappingService)); // Request Transformation
-                   
-                   if (StrUtil.isNotEmpty(forwardUri)) {
-                       getRouteCollection().getRoutes().get(getRouteCollection().getRoutes().size()-1) // Get the current route definition
-                           .log(LoggingLevel.INFO, "ESB Route " + routeId + " forwarding to: " + forwardUri)
-                           .to(forwardUri)
-                           .log(LoggingLevel.INFO, "ESB Route " + routeId + " received response from target. Status: ${header.CamelHttpResponseCode}. Body: ${body}")
-                           // TODO: Integrate with EsbLogService for response logging
-                           .process(new EsbResponseTransformProcessor(interfaceDO, esbMappingService)); // Response Transformation
-                   } else {
-                        // Handle cases where there is no forward URI (e.g., respond directly or error)
-                        getRouteCollection().getRoutes().get(getRouteCollection().getRoutes().size()-1)
-                           .log(LoggingLevel.WARN, "ESB Route " + routeId + " has no forward URI configured. Ending route.")
-                           // .transform().simple("Mock response as no forward URI set for ${routeId}") // Example direct response
-                           .process(new EsbResponseTransformProcessor(interfaceDO, esbMappingService)); // Still process response (e.g. to set a default)
-                   }
-                       // TODO: Success/failure determination based on interfaceDO.getSuccessFlagJsonPath()
-               }
-           };
-           camelContext.addRoutes(routeBuilder); // This starts routes by default if CamelContext is started.
-                                               // No need to explicitly start route if autoStartup is true (default) for routes.
-           log.info("Successfully defined and added Camel route with ID: {} for interface code: {}", routeId, interfaceDO.getCode());
-           return routeId;
+                        .process(new EsbInitialLogProcessor()) // 1. Initial Log
+                        .process(new EsbRequestTransformProcessor(interfaceDO, esbMappingService)) // 2. Request Transform
+                        .process(new EsbPreForwardLogProcessor()) // 3. Pre-Forward Log
 
-       } catch (Exception e) {
-           log.error("Failed to build or add Camel route: {} for interface code: {}. Error: {}", routeId, interfaceDO.getCode(), e.getMessage(), e);
-           // Attempt to clean up if route definition was partially added or failed
-           try {
-               if (camelContext.getRoute(routeId) != null) {
-                   camelContext.getRouteController().stopRoute(routeId);
-                   camelContext.removeRoute(routeId);
-               }
-           } catch (Exception cleanupEx) {
-               log.error("Error during cleanup of failed route {}: {}", routeId, cleanupEx.getMessage(), cleanupEx);
-           }
-           return null;
-       }
+                        .choice()
+                            .when(forwardUriNotBlank) // Use the Predicate here
+                                .to(forwardUri) // 4. Actual Forwarding
+                            .otherwise()
+                                .setProperty("esbForwardingSkipped", constant(true))
+                                // Optionally set a default error response
+                                .setHeader(Exchange.HTTP_RESPONSE_CODE, constant(503)) // Service Unavailable
+                                .setBody(constant("{\"error\": \"ESB Service forwarding destination not configured or invalid.\"}"))
+                                .setHeader(Exchange.CONTENT_TYPE, constant("application/json"))
+                        .endChoice()
+
+                        .process(new EsbPostForwardLogProcessor()) // 5. Post-Forward Log (handles skipped forward too)
+                        .process(new EsbResponseTransformProcessor(interfaceDO, esbMappingService)) // 6. Response Transform
+
+                        .doFinally() // Ensures this block is always executed
+                            .process(new EsbFinalLogProcessor(esbLogService)) // 7. Final Log (persists)
+                        .end();
+                }
+            };
+            camelContext.addRoutes(routeBuilder);
+            log.info("Successfully defined and added Camel route with ID: {} for interface code: {}", routeId, interfaceDO.getCode());
+            return routeId;
+
+        } catch (Exception e) {
+            log.error("Failed to build or add Camel route: {} for interface code: {}. Error: {}", routeId, interfaceDO.getCode(), e.getMessage(), e);
+            // Cleanup attempt (already in previous version)
+            try {
+                if (camelContext.getRoute(routeId) != null) {
+                    camelContext.getRouteController().stopRoute(routeId);
+                    camelContext.removeRoute(routeId);
+                }
+            } catch (Exception cleanupEx) {
+                log.error("Error during cleanup of failed route {}: {}", routeId, cleanupEx.getMessage(), cleanupEx);
+            }
+            return null;
+        }
     }
 
     @Override
