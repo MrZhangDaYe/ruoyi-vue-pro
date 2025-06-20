@@ -58,7 +58,7 @@ services:
   admin:
     container_name: yudao-admin
     build:
-      context: ./yudao-ui-admin
+      context: ./yudao-ui-admin-vue2
       args:
         NODE_ENV:
           ENV=${NODE_ENV:-production}
